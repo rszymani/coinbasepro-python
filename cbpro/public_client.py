@@ -3,8 +3,10 @@
 # Daniel Paquin
 #
 # For public requests to the Coinbase exchange
+import time
 
 import requests
+import sys
 
 
 class PublicClient(object):
@@ -114,19 +116,19 @@ class PublicClient(object):
         return self._send_message('get',
                                   '/products/{}/ticker'.format(product_id))
 
-    def get_product_trades(self, product_id, before='', after='', limit=None, result=None):
+    def get_product_trades(self, product_id, after='', before='', stop_pagination=0, limit=100):
         """List the latest trades for a product.
 
         This method returns a generator which may make multiple HTTP requests
-        while iterating through it.
+        while iterating through it. Science `before` it is not supported by coinbase it is not listed in
+        method params.
 
         Args:
              product_id (str): Product
-             before (Optional[str]): start time in ISO 8601
-             after (Optional[str]): end time in ISO 8601
+             after (Optional[str]): request page after (older) this pagination id.
+             before (Optional[str]): request page before (newer) this pagination id.
              limit (Optional[int]): the desired number of trades (can be more than 100,
                           automatically paginated)
-             results (Optional[list]): list of results that is used for the pagination
         Returns:
              list: Latest trades. Example::
                  [{
@@ -143,8 +145,16 @@ class PublicClient(object):
                      "side": "sell"
          }]
         """
-        return self._send_paginated_message('/products/{}/trades'
-                                            .format(product_id))
+        params = {}
+        if before:
+            params['before'] = before
+        if limit:
+            params['limit'] = limit
+        if after:
+            params['after'] = after
+        return self._send_paginated_message(
+            f'/products/{product_id}/trades', stop_pagination=stop_pagination, params=params
+        )
 
     def get_product_historic_rates(self, product_id, start=None, end=None,
                                    granularity=None):
@@ -269,7 +279,7 @@ class PublicClient(object):
                                  auth=self.auth, timeout=30)
         return r.json()
 
-    def _send_paginated_message(self, endpoint, params=None):
+    def _send_paginated_message(self, endpoint, stop_pagination=0, params=None):
         """ Send API message that results in a paginated response.
 
         The paginated responses are abstracted away by making API requests on
@@ -295,17 +305,22 @@ class PublicClient(object):
         if params is None:
             params = dict()
         url = self.url + endpoint
+        if params.get('before'):
+            # coinbase pro doesn't support before.
+            raise ValueError('Before param not work without after param. It should be passed togheter.')
         while True:
-            r = self.session.get(url, params=params, auth=self.auth, timeout=30)
-            results = r.json()
+            response = self.session.get(url, params=params, auth=self.auth, timeout=30)
+            results = response.json()
+            time.sleep(0.5)
             for result in results:
                 yield result
             # If there are no more pages, we're done. Otherwise update `after`
             # param to get next page.
-            # If this request included `before` don't get any more pages - the
-            # cbpro API doesn't support multiple pages in that case.
-            if not r.headers.get('cb-after') or \
-                    params.get('before') is not None:
+            # Since coinbase pro doesn't support before, it was needed artificially compute stop of the pagination.
+            next_after = int(response.headers['Cb-After']) if response.headers.get('Cb-After') else None
+            if not next_after or stop_pagination == params.get('after', 0) - params.get('limit'):
                 break
-            else:
-                params['after'] = r.headers['cb-after']
+
+            elif stop_pagination > next_after - params.get('limit'):
+                params['limit'] = next_after - stop_pagination
+            params['after'] = next_after
