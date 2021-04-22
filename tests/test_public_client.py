@@ -44,10 +44,15 @@ class TestPublicClient(object):
         assert 'ask' in r
         assert 'trade_id' in r
 
-    def test_get_product_trades(self, client):
-        r = list(islice(client.get_product_trades('BTC-USD'), 200))
+    @pytest.mark.parametrize(
+        'before,after,limit,expected',
+        [(None, None, None, 100), (None, 11, 100, 10), (500, None, 15, 15)]
+    )
+    def test_get_product_trades(self, client, before, after, limit, expected):
+        r = list(islice(client.get_product_trades('BTC-USD', before=before, after=after, limit=limit), expected))
         assert type(r) is list
         assert 'trade_id' in r[0]
+        assert len(r) == expected
 
     current_time = datetime.datetime.now()
 
